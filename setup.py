@@ -22,9 +22,9 @@ setup(
     packages=[],
     install_requires=[
         "prometheus_client",
-        "python-keystoneclient<=3.10.0",
-        "python-novaclient==6.0.0",
-        "python-neutronclient<=6.1.0",
+        "python-keystoneclient",
+        "python-novaclient",
+        "python-neutronclient",
         "python-cinderclient",
         "netaddr",
         "swift",

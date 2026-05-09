@@ -83,7 +83,7 @@ def maybe_get_cacert():
 
 def get_clients():
     """Return openstack clients."""
-    ks_version = int(env.get("OS_IDENTITY_API_VERSION", 2))
+    ks_version = int(env.get("OS_IDENTITY_API_VERSION") or 2)
     if ks_version == 2:
         from keystoneclient.v2_0 import client as keystone_client
 
@@ -1066,11 +1066,23 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", CONTENT_TYPE_LATEST)
                 self.end_headers()
                 self.wfile.write(output)
+            except FileNotFoundError as e:
+                # Cache file not yet written by DataGatherer (first run, or
+                # gatherer is failing to authenticate). Return 503 so scrapers
+                # can distinguish "not ready" from a genuine collection error.
+                log.warning("Cache file not available yet: %s", e)
+                self.send_response(503)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    b"Cache not ready: DataGatherer has not written "
+                    b"the cache file yet. Check exporter logs.\n"
+                )
             except Exception:
                 log.exception("")
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(traceback.format_exc())
+                self.wfile.write(traceback.format_exc().encode("utf-8"))
         elif url.path == "/":
             self.send_response(200)
             self.end_headers()

@@ -1087,13 +1087,15 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
         elif url.path == "/":
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"""<html>
+            self.wfile.write(
+                b"""<html>
             <head><title>OpenStack Exporter</title></head>
             <body>
             <h1>OpenStack Exporter</h1>
             <p>Visit <code>/metrics</code> to use.</p>
             </body>
-            </html>""")
+            </html>"""
+            )
         else:
             self.send_response(404)
             self.end_headers()

@@ -17,7 +17,7 @@ setup(
     description="Exposes high level OpenStack metrics to Prometheus.",
     license="GPLv3",
     keywords=["prometheus", "openstack", "exporter"],
-    url="https://github.com/CanonicalLtd/prometheus-openstack-exporter",
+    url="https://github.com/osuosl/prometheus-openstack-exporter",
     scripts=["prometheus-openstack-exporter"],
     packages=[],
     install_requires=[

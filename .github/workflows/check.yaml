@@ -1,15 +1,19 @@
-# This file is centrally managed as a template file in https://github.com/canonical/solutions-engineering-automation
-# To update the file:
-# - Edit it in the canonical/solutions-engineering-automation repository.
-# - Open a PR with the changes.
-# - When the PR merges, the soleng-terraform bot will open a PR to the target repositories with the changes.
 name: Tests
 
+# Jobs run inside almalinux:9 to match the deployment environment — Python
+# 3.9 plus the system libs the exporter imports at startup (notably
+# liberasurecode, which swift needs). The runner host is ubuntu-latest for
+# cost; the container provides the real test environment.
+
 on:
-  workflow_call:
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened]
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "**.rst"
+  push:
     branches: [main]
     paths-ignore:
       - "**.md"
@@ -21,165 +25,57 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container: almalinux:9
     steps:
+      - name: Install prerequisites
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git python3 python3-pip
+
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Complete git history is required to generate the version from git tags.
+          fetch-depth: 0  # required by setuptools_scm for version derivation
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y yamllint
-          python -m pip install --upgrade pip
-          # pin tox to the current major version to avoid
-          # workflows breaking all at once when a new major version is released.
-          python -m pip install 'tox<5'
+      - name: Install tox
+        run: python3 -m pip install --upgrade pip 'tox<5'
 
       - name: Run linters
         run: tox -e lint
 
-      - name: Lint yaml files
-        run: |
-          yamllint .yamllint snap/snapcraft.yaml
-
   unit:
-    name: Unit
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.10']
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container: almalinux:9
     steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: true
+      - name: Configure OSUOSL yum repo (provides liberasurecode-devel on EL9)
+        run: |
+          cat > /etc/yum.repos.d/osuosl.repo <<'EOF'
+          [osuosl]
+          name=OSUOSL repo $releasever - $basearch
+          baseurl=https://ftp.osuosl.org/pub/osl/repos/yum/$releasever/$basearch
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://ftp.osuosl.org/pub/osl/repos/yum/RPM-GPG-KEY-osuosl-2024
+          EOF
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Install build + runtime prerequisites
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git python3 python3-pip python3-devel \
+            gcc libxml2-devel libxslt-devel openssl-devel libffi-devel \
+            liberasurecode-devel
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install 'tox<5'
-
-    - name: Run unit tests
-      run: tox -e unit
-
-    - name: Determine system architecture
-      run: echo "SYSTEM_ARCH=$(uname -m)" >> $GITHUB_ENV
-
-    - name: Create artifact name suffix
-      run: |
-        PYTHON_VERSION_SANITIZED=${{ matrix.python-version }}
-        PYTHON_VERSION_SANITIZED=${PYTHON_VERSION_SANITIZED//./-}
-        echo "ARTIFACT_SUFFIX=$PYTHON_VERSION_SANITIZED-${{ env.SYSTEM_ARCH }}" >> $GITHUB_ENV
-
-    - name: Rename Unit Test Coverage Artifact
-      run: |
-        if [ -e ".coverage-unit" ]; then
-          mv .coverage-unit .coverage-unit-${{ env.ARTIFACT_SUFFIX }}
-        else
-          echo "No coverage file found, skipping rename"
-        fi
-
-    - name: Upload Unit Test Coverage File
-      uses: actions/upload-artifact@v4
-      with:
-        include-hidden-files: true
-        if-no-files-found: ignore
-        name: coverage-unit-${{ env.ARTIFACT_SUFFIX }}
-        path: .coverage-unit-${{ env.ARTIFACT_SUFFIX }}
-
-  build:
-    needs:
-      - lint
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runs-on: [[ubuntu-24.04], [self-hosted, jammy, ARM64]]
-    steps:
       - uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
         with:
-          fetch-depth: 0  # Complete git history is required to generate the version from git tags.
+          path: ~/.cache/pip
+          key: pip-el9-${{ hashFiles('requirements.txt', 'tox.ini') }}
+          restore-keys: pip-el9-
 
-      - name: Verify snap builds successfully
-        id: build
-        uses: canonical/action-build@v1
+      - name: Install tox
+        run: python3 -m pip install --upgrade pip 'tox<5'
 
-      - name: Determine system architecture
-        run: echo "SYSTEM_ARCH=$(uname -m)" >> $GITHUB_ENV
-
-      - name: Upload the built snap
-        uses: actions/upload-artifact@v4
-        with:
-          name: snap_${{ env.SYSTEM_ARCH }}
-          path: ${{ steps.build.outputs.snap }}
-
-  func:
-    needs:
-      - build
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runs-on: [[ubuntu-24.04], [self-hosted, jammy, ARM64]]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Complete git history is required to generate the version from git tags.
-
-      - name: Determine system architecture
-        run: echo "SYSTEM_ARCH=$(uname -m)" >> $GITHUB_ENV
-
-      - name: Download snap file artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: snap_${{ env.SYSTEM_ARCH }}
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install 'tox<5'
-
-      - name: Run func tests
-        run: |
-          export TEST_SNAP="$(pwd)/$(ls | grep '.*_.*\.snap$')"
-          echo "$TEST_SNAP"
-          tox -e func
-
-      - name: Create artifact name suffix
-        run: |
-          BASE_VERSION_SANITIZED=${{ matrix.runs-on }}
-          BASE_VERSION_SANITIZED=${BASE_VERSION_SANITIZED//./-}
-          echo "ARTIFACT_SUFFIX=$BASE_VERSION_SANITIZED-${{ env.SYSTEM_ARCH }}" >> $GITHUB_ENV
-
-      - name: Rename Functional Test Coverage Artifact
-        run: |
-          if [ -e ".coverage-func" ]; then
-            mv .coverage-func .coverage-func-${{ env.ARTIFACT_SUFFIX }}
-          else
-            echo "No coverage file found, skipping rename"
-          fi
-
-      - name: Upload Functional Test Coverage Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          include-hidden-files: true
-          if-no-files-found: ignore
-          name: coverage-functional-${{ env.ARTIFACT_SUFFIX }}
-          path: .coverage-func-${{ env.ARTIFACT_SUFFIX }}
-
+      - name: Run unit tests
+        run: tox -e unit

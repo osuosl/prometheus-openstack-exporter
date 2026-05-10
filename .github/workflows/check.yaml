@@ -47,9 +47,19 @@ jobs:
     runs-on: ubuntu-latest
     container: almalinux:9
     steps:
+      - name: Configure OSUOSL yum repo (provides liberasurecode-devel on EL9)
+        run: |
+          cat > /etc/yum.repos.d/osuosl.repo <<'EOF'
+          [osuosl]
+          name=OSUOSL repo $releasever - $basearch
+          baseurl=https://ftp.osuosl.org/pub/osl/repos/yum/$releasever/$basearch
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://ftp.osuosl.org/pub/osl/repos/yum/RPM-GPG-KEY-osuosl-2024
+          EOF
+
       - name: Install build + runtime prerequisites
         run: |
-          dnf install -y epel-release
           dnf install -y --setopt=install_weak_deps=False \
             git python3 python3-pip python3-devel \
             gcc libxml2-devel libxslt-devel openssl-devel libffi-devel \

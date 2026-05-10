@@ -1,143 +1,149 @@
 # Prometheus OpenStack exporter
 
-> [!NOTE]
-> This charm is deprecated. Please use the new charm [openstack-exporter](https://charmhub.io/openstack-exporter) instead. It is integrate with [COS](https://charmhub.io/cos-lite) natively.
+Exposes high-level [OpenStack](https://www.openstack.org/) metrics to
+[Prometheus](https://prometheus.io/). Data can be visualised in
+[Grafana](https://grafana.com/) — see the
+[OpenStack Clouds Dashboard](https://grafana.com/dashboards/7924) for a
+ready-made starting point.
 
-Exposes high level [OpenStack](http://www.openstack.org/) metrics to [Prometheus](https://prometheus.io/).
+## About this fork
 
-Data can be visualised using [Grafana](https://grafana.com/) and the [OpenStack Clouds Dashboard](https://grafana.com/dashboards/7924)
+This is the [OSUOSL](https://osuosl.org/) fork of the original
+[Canonical project](https://github.com/canonical/prometheus-openstack-exporter),
+which is **deprecated upstream**. This fork is maintained for environments
+where the upstream replacement isn't a fit.
 
-## Deployment
+The default branch is `main`. Bug fixes and small enhancements are accepted;
+larger architectural changes (asyncio migration, openstacksdk migration) are
+not currently planned.
 
-### Requirements
+## Installation
 
-```
-sudo apt-get install python-neutronclient python-novaclient python-keystoneclient python-netaddr python-cinderclient
-```
+### From RPM (recommended for RHEL/AlmaLinux)
 
-Install prometheus_client. On Ubuntu 16.04:
-```
-apt-get install python-prometheus-client
-```
+The companion repo at
+[osuosl/openstack_exporter](https://gitlab.osuosl.org/osl/rpms/openstack_exporter)
+builds RPMs for AlmaLinux 9 / 10 with OpenStack release-pinned dependencies
+via upper-constraints. The RPM ships a self-contained venv under
+`/opt/openstack_exporter/` plus the systemd unit and config defaults.
 
-On Ubuntu 14.04:
-```
-pip install prometheus_client
-```
+### From source
 
-### Installation
-
-```
-# Copy example config in place, edit to your needs
-sudo cp prometheus-openstack-exporter.yaml /etc/prometheus/
-
-## Upstart
-# Install job
-sudo cp prometheus-openstack-exporter.conf /etc/init
-
-# Configure novarc location:
-sudo sh -c 'echo "NOVARC=/path/to/admin-novarc">/etc/default/prometheus-openstack-exporter'
-
-## Systemd
-# Install job
-sudo cp prometheus-openstack-exporter.service /etc/systemd/system/
-
-# create novarc
-sudo cat <<EOF > /etc/prometheus-openstack-exporter/admin.novarc
-export OS_USERNAME=Admin
-export OS_TENANT_NAME=admin
-export OS_PASSWORD=XXXX
-export OS_REGION_NAME=cloudname
-export OS_AUTH_URL=http://XX.XX.XX.XX:35357/v2.0
-EOF
-
-# create default config location
-sudo sh -c 'echo "CONFIG_FILE=/etc/prometheus-openstack-exporter/prometheus-openstack-exporter.yaml">/etc/default/prometheus-openstack-exporter'
-
-
-# Start
-sudo start prometheus-openstack-exporter
+```sh
+python3 -m venv /opt/prometheus-openstack-exporter
+/opt/prometheus-openstack-exporter/bin/pip install -r requirements.txt .
 ```
 
-Or to run interactively:
+For a specific OpenStack release, use that release's upper-constraints:
 
-```
-. /path/to/admin-novarc
-./prometheus-openstack-exporter prometheus-openstack-exporter.yaml
-
-```
-
-Or use Docker Image:
-
-```
-# docker-compose.yml
-version: '2.1'
-services:
-  ostackexporter:
-    image: moghaddas/prom-openstack-exporter:latest
-    # check this examle env file
-    env_file:
-      - ./admin.novarc.example
-    restart: unless-stopped
-    expose:
-      - 9183
-    ports:
-      - 9183:9183
-
-# docker run
-docker run \
-  -itd \
-  --name prom_openstack_exporter \
-  -p 9183:9183 \
-  --env-file=$(pwd)/admin.novarc.example \
-  --restart=unless-stopped \
-  moghaddas/prom-openstack-exporter:latest
-
+```sh
+/opt/prometheus-openstack-exporter/bin/pip install \
+  -c https://opendev.org/openstack/requirements/raw/tag/yoga-eom/upper-constraints.txt \
+  -r requirements.txt .
 ```
 
 ## Configuration
 
-Configuration options are documented in prometheus-openstack-exporter.yaml shipped with this project
+Two files drive the exporter at runtime:
+
+1. **`/etc/prometheus-openstack-exporter/prometheus-openstack-exporter.yaml`** —
+   exporter behavior (refresh interval, swift hosts, allocation ratios, etc.).
+   Options are documented inline in
+   [`prometheus-openstack-exporter.sample.yaml`](prometheus-openstack-exporter.sample.yaml).
+
+2. **`/etc/prometheus-openstack-exporter/admin.novarc`** — OpenStack credentials
+   sourced into the service environment. Modern (Keystone v3) example:
+
+   ```sh
+   export OS_IDENTITY_API_VERSION=3
+   export OS_AUTH_URL=https://keystone.example.com:5000/v3
+   export OS_USERNAME=admin
+   export OS_PASSWORD=XXXX
+   export OS_PROJECT_NAME=admin
+   export OS_USER_DOMAIN_NAME=Default
+   export OS_PROJECT_DOMAIN_NAME=Default
+   export OS_REGION_NAME=RegionOne
+   ```
+
+   For legacy v2 deployments, set `OS_IDENTITY_API_VERSION=2` and use
+   `OS_TENANT_NAME` instead of `OS_PROJECT_NAME`. Empty/unset
+   `OS_IDENTITY_API_VERSION` defaults to v2.
+
+`/etc/default/prometheus-openstack-exporter` should set `CONFIG_FILE` to the
+yaml path.
+
+## Running
+
+### systemd
+
+```sh
+sudo cp prometheus-openstack-exporter.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now prometheus-openstack-exporter
+```
+
+### Interactively
+
+```sh
+. /etc/prometheus-openstack-exporter/admin.novarc
+./prometheus-openstack-exporter /etc/prometheus-openstack-exporter/prometheus-openstack-exporter.yaml
+```
+
+Metrics are served at `http://<host>:9183/metrics`.
+
+## Operational behavior
+
+- **Cache-backed scrapes.** A background `DataGatherer` thread polls
+  OpenStack on a configurable `refresh_interval` and writes a pickle to
+  `/var/cache/prometheus-openstack-exporter/cache`. `/metrics` reads that
+  cache instead of hitting OpenStack on every scrape — necessary because
+  the underlying queries can take minutes on larger clouds.
+- **Startup window.** Until the gatherer writes its first cache (a few
+  seconds after start), `/metrics` returns HTTP `503 Service Unavailable`
+  with a clear message. Prometheus will mark `up=0` for that brief window;
+  this is intentional and lets you alert on persistent 503s.
+- **Cache age.** The metric `openstack_exporter_cache_age_seconds` reports
+  how stale the cache is. Alert on this rather than on scrape latency.
 
 ## FAQ
 
 ### Why are openstack_allocation_ratio values hardcoded?
 
-There is no way to retrieve them using OpenStack API.
+There's no OpenStack API to retrieve them. Hardcoding them in queries (the
+alternative) breaks when ratios change.
 
-Alternative approach could be to hardcode those values in queries but this approach breaks when allocation ratios change.
+### Why hardcode the swift host list?
 
-### Why hardcode swift host list?
+Same reason — no API to enumerate them.
 
-Same as above, there is no way to retrieve swift hosts using API.
+### Why not write a dedicated Swift exporter?
 
-### Why not write dedicated swift exporter?
-
-Swift stats are included mainly because they are trivial to retrieve. If and when standalone swift exporter appears we can revisit this approach
+Swift stats are included because they're trivial to retrieve from the rings.
+If a standalone Swift exporter appears we can revisit.
 
 ### Why cache data?
 
-We are aware that Prometheus best practise is to avoid caching. Unfortunately queries we need to run are very heavy and in bigger clouds can take minutes to execute. This is problematic not only because of delays but also because multiple servers scraping the exporter could have negative impact on the cloud performance
+Prometheus best-practice is to avoid caching, but the OpenStack queries we
+run are heavy — multiple servers scraping uncached would impact cloud
+performance. The cache decouples scrape cadence from API call cadence.
 
 ### How are Swift account metrics obtained?
 
-Fairly simply!  Given a copy of the Swift rings (in fact, we just need
-account.ring.gz) we can load this up and then ask it where particular
-accounts are located in the cluster.  We assume that Swift is
-replicating properly, pick a node at random, and ask it for the
-account's statistics with an HTTP HEAD request, which it returns.
+Given the Swift rings (`account.ring.gz` is enough), the exporter asks the
+ring where a particular account lives, picks a node at random, and issues
+an HTTP HEAD to that node's account server.
 
 ### How hard would it be to export Swift usage by container?
 
-Sending a GET request to the account URL yields a list of containers
-(probably paginated, so watch out for that!).  In order to write a
-container-exporter, one could add some code to fetch a list of
-containers from the account server, load up the container ring, and
-then use container_ring.get_nodes(account, container) and HTTP HEAD on
-one of the resulting nodes to get a containers' statistics, although
-without some caching cleverness this will scale poorly.
+Doable: GET the account URL for a (paginated) container list, then use
+`container_ring.get_nodes(account, container)` + HTTP HEAD on one of the
+resulting nodes. Without caching cleverness it will scale poorly.
 
-## Known Issues
-### EOFError by pickle.py
+## Contributing
 
-You should wait. It needs dump file to generate metrics
+See [CONTRIBUTING.md](CONTRIBUTING.md). Tests:
+
+```sh
+venv/bin/python -m unittest discover tests
+tox -e lint
+```
